@@ -1,12 +1,16 @@
-# Lavalink 4.2.1 — OptikLink VPS (1 vCPU / 1 GB), tuned 2026-09-26.
+# Lavalink 4.2.2 (OptikLink panel image) — 1 vCPU / 1 GB VPS.
 #
 # Secrets are INLINE because the panel runs a fixed `java -jar Lavalink.jar` with
 # no environment variables. Do not reintroduce ${VAR} placeholders: Spring does
 # not understand bash `${VAR:?message}` syntax, and the node dies at boot with
 # "Invalid status code for oauth2 token fetch: 400". That already happened once.
 #
-# Port 2333 must match NODE_PORT in the bot's .env.
-# Password must match NODE_PASSWORD in the bot's .env.
+# server.port must match NODE_PORT in the bot's .env (5549).
+# lavalink.server.password must match NODE_PASSWORD in the bot's .env.
+#
+# Audio settings below are a deliberate compromise, not the Lavalink defaults.
+# See the comments on each value: 1 vCPU cannot afford opus 10 + HIGH resampling
+# while also filtering, but 225ms buffers were tight enough to stutter.
 
 server:
   port: 5549
@@ -58,6 +62,20 @@ plugins:
     # 1.18.2 (verified against the jar's client classes) — notably WEBEMBEDDED,
     # which the previous config misspelled as TVHTML5EMBEDDED and which was
     # therefore silently dropped at every boot.
+    #
+    # Capabilities differ per client and this is why playback is still
+    # best-effort from a datacenter IP:
+    #   TV          — the ONLY OAuth-capable client. Needs sign-in to play.
+    #   ANDROID_VR  — Opus, no OAuth, heavily gated on datacenter IPs.
+    #   IOS/MWEB    — player-API changes break them independently of IP.
+    #   WEB         — YouTube now often returns SABR-only responses with no
+    #                 per-format stream URL, so it can report
+    #                 "No supported audio streams available" while audio itags
+    #                 are visibly present in the JSON.
+    #   MUSIC       — search only (see clientOptions below).
+    # Do not add ANDROID ("heavily restricted, frequently dysfunctional" upstream)
+    # or TVHTML5_SIMPLY. More weak clients lengthen the failure path without
+    # adding a working one.
     clients:
       - ANDROID_VR
       - ANDROID_MUSIC
@@ -90,16 +108,16 @@ plugins:
         playlistLoading: false
         searching: false
         videoLoading: true
-      # MUSIC reports to Lavalink as WEB_REMIX. It was playback:false here,
-      # which was a self-inflicted limit: the bot's defaultSearchPlatform is
-      # ytmsearch, so its results are music.youtube.com URLs, and MUSIC is the
-      # client purpose-built for those. Enabled so it gets a real shot at
-      # playback instead of only searching.
+      # MUSIC reports to Lavalink as WEB_REMIX. Per the youtube-source client
+      # table it is SEARCH ONLY: no Opus formats, no playback support. It stays
+      # in the global clients list because the bot's defaultSearchPlatform is
+      # ytmsearch, which needs it for search. Setting playback:true here grants
+      # nothing and only makes the failure path noisier.
       MUSIC:
-        playback: true
-        playlistLoading: true
+        playback: false
+        playlistLoading: false
         searching: true
-        videoLoading: true
+        videoLoading: false
       ANDROID_VR:
         playback: true
         playlistLoading: true
@@ -115,6 +133,13 @@ plugins:
         playlistLoading: true
         searching: true
         videoLoading: true
+
+  # LavaSearch indexes these for in-app search lookups. Spelled out explicitly
+  # because the jar's built-in default has changed between releases.
+  lavasearch:
+    sources:
+      - spotify
+      - youtube
 
   lavasrc:
     # Order matters — first match wins.
@@ -232,9 +257,25 @@ lavalink:
   #   sponsorblock-plugin    — zero references in the bot
   # Leaving them declared would make every boot depend on reaching
   # maven.lavalink.dev to download them.
+  #
+  # WARNING: Lavalink loads EVERY .jar it finds in pluginsDir, whether or not it
+  # is listed here. A stray jar in that folder loads silently. Keep the folder
+  # limited to exactly these three jars.
   plugins:
-    - dependency: dev.lavalink.youtube:youtube-plugin:1.18.2
-      snapshot: false
+    # NOT a release. 1.18.2 is broken for this region: it returns SABR-only
+    # responses (audio itags present, no `url`, no `formats` array, only
+    # serverAbrStreamingUrl with sabr=1), so every client fails.
+    # Upstream: lavalink-devs/youtube-source issue #240 (14 thumbs, still open).
+    #
+    # 2be8e542d is the child of f45bbb7a — the commit users report fixing #240 —
+    # plus PR #245 (cipher connection-starvation fix, signed off by a maintainer).
+    # It also carries Pot.java, so plugins.youtube.pot.{token,visitorData} exists
+    # here but NOT in 1.18.2.
+    #
+    # Snapshots are unreleased. When upstream ships a fix, re-pin to it.
+    - dependency: dev.lavalink.youtube:youtube-plugin:2be8e542d3f6f178e048dca565892684c2e40177
+      repository: https://maven.lavalink.dev/snapshots
+      snapshot: true
     - dependency: com.github.topi314.lavasrc:lavasrc-plugin:4.8.3
       snapshot: false
     - dependency: com.github.topi314.lavasearch:lavasearch-plugin:1.0.0
@@ -267,15 +308,29 @@ lavalink:
       channelMix: true
       lowPass: true
     nonAllocatingFrameBuffer: false
-    bufferDurationMs: 225
+    # 400ms is the Lavalink default and the documented value for weak hosts.
+    # The previous 225ms left no headroom for a GC pause on a 1 vCPU/1 GB box,
+    # which shows up as audible underruns. 40ms is the hard minimum; <=0
+    # disables JDA-NAS.
+    bufferDurationMs: 400
     frameBufferDurationMs: 5000
-    opusEncodingQuality: 5
-    resamplingQuality: LOW # HIGH is "the most CPU"; this box has 1 vCPU
-    trackStuckThresholdMs: 5000
+    # Official default is 10. Stepped to 8: this only affects the transcoding
+    # path, and 10 + filters on 1 vCPU risks stutter. Raise to 10 only after
+    # /v4/stats shows lavalinkLoad well under 1.0.
+    opusEncodingQuality: 8
+    # LOW is the official default and HIGH is documented as "the most CPU".
+    # MEDIUM is a small step up that this box should absorb; revert to LOW if
+    # /v4/stats frameStats.deficit climbs above 0.
+    resamplingQuality: MEDIUM
+    # Was 5000. Too low: a marginally slow source got abandoned before it had
+    # a chance to recover, turning a slow track into a hard failure.
+    trackStuckThresholdMs: 10000
     useSeekGhosting: true
     youtubePlaylistLoadLimit: 6 # 6 x 100 = 600. Was 3 (300), which silently
                                  # truncated the large /spotifyplaylist loads.
-    playerUpdateInterval: 3
+    # Was 3. The official default is 5; 3 only adds websocket traffic and CPU
+    # for no benefit on a single-node setup.
+    playerUpdateInterval: 5
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
     soundcloudFilterOutPreviewTracks: true
