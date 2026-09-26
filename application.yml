@@ -1,0 +1,348 @@
+# Lavalink 4.2.1 — OptikLink VPS (1 vCPU / 1 GB), tuned 2026-09-26.
+#
+# Secrets are INLINE because the panel runs a fixed `java -jar Lavalink.jar` with
+# no environment variables. Do not reintroduce ${VAR} placeholders: Spring does
+# not understand bash `${VAR:?message}` syntax, and the node dies at boot with
+# "Invalid status code for oauth2 token fetch: 400". That already happened once.
+#
+# Port 2333 must match NODE_PORT in the bot's .env.
+# Password must match NODE_PASSWORD in the bot's .env.
+
+server:
+  port: 5549
+  address: 0.0.0.0
+  http2:
+    enabled: false
+
+plugins:
+  youtube:
+    enabled: true
+    oauth:
+      # One of the few real levers against YouTube gating this VPS's datacenter
+      # IP. Burner account — risk of ban from Google/YouTube.
+      enabled: true
+      refreshToken: 1//05eVJMrhyUcq2CgYIARAAGAUSNwF-L9Ir3gEa6DSFX0YleFRB0OjyNolItThNkeWsBx6MN0D0_Pws4kacKMQsxTSHZZatAeaxx5k
+      # We hand over a token, so skip the interactive browser setup.
+      skipInitialization: true
+    # pot is intentionally NOT set. The only generator for it
+    # (iv-org/youtube-trusted-session-generator) is deprecated and does not work
+    # with YouTube's current token method, and it must be run from the blocked
+    # IP anyway. Its replacement is a whole separate service.
+    #
+    # remoteCipher offloads signature deciphering to yt-cipher, which wraps
+    # yt-dlp/ejs. This is REQUIRED right now, not an optimisation.
+    #
+    # youtube-plugin 1.18.2's built-in LocalSignatureCipherManager cannot find
+    # the sig function in YouTube's current player script:
+    #   ERROR LocalSignatureCipherManager : Problematic YouTube player script
+    #   /s/player/7460dd14/player_embed.vflset/it_IT/base.js detected
+    #   (issue detected with script: must find sig function)
+    # That kills MWEB and TVHTML5 outright, and TVHTML5 is the only OAuth-capable
+    # client we run — so this also unblocks the OAuth token we already hold.
+    #
+    # The plugin's local extractor is the thing that broke; there is no newer
+    # youtube-plugin release to upgrade to (1.18.2 is current). yt-cipher tracks
+    # YouTube's changes independently.
+    #
+    # The public instance is rate-limited to 10 req/sec, which is fine for one
+    # node. Self-host with Deno if it ever becomes a problem.
+    remoteCipher:
+      url: https://cipher.kikkia.dev/
+      userAgent: aura-musicbot-node1 # optional; identifies us in their metrics
+      # No password: the public instance does not require one. If you self-host
+      # and set API_TOKEN there, add it here as `password:`.
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    # Clients queried in order. All eight names below are real identifiers in
+    # 1.18.2 (verified against the jar's client classes) — notably WEBEMBEDDED,
+    # which the previous config misspelled as TVHTML5EMBEDDED and which was
+    # therefore silently dropped at every boot.
+    clients:
+      - ANDROID_VR
+      - ANDROID_MUSIC
+      - IOS
+      - MWEB
+      - WEB
+      - MUSIC
+      - WEBEMBEDDED
+      - TV
+    clientOptions:
+      # TV is listed last on purpose. It needs OAuth2 sign-in to play, and the
+      # burned-in account is the only thing that can satisfy that.
+      TV:
+        playback: true # Requires sign-in (OAuth2)
+        playlistLoading: false
+        searching: false
+        videoLoading: false
+      WEB:
+        playback: true
+        playlistLoading: true
+        searching: true
+        videoLoading: true
+      MWEB:
+        playback: true
+        playlistLoading: true
+        searching: true
+        videoLoading: true
+      WEBEMBEDDED:
+        playback: true
+        playlistLoading: false
+        searching: false
+        videoLoading: true
+      # MUSIC reports to Lavalink as WEB_REMIX. It was playback:false here,
+      # which was a self-inflicted limit: the bot's defaultSearchPlatform is
+      # ytmsearch, so its results are music.youtube.com URLs, and MUSIC is the
+      # client purpose-built for those. Enabled so it gets a real shot at
+      # playback instead of only searching.
+      MUSIC:
+        playback: true
+        playlistLoading: true
+        searching: true
+        videoLoading: true
+      ANDROID_VR:
+        playback: true
+        playlistLoading: true
+        searching: true
+        videoLoading: true
+      ANDROID_MUSIC:
+        playback: true
+        playlistLoading: false
+        searching: true
+        videoLoading: true
+      IOS:
+        playback: true
+        playlistLoading: true
+        searching: true
+        videoLoading: true
+
+  lavasrc:
+    # Order matters — first match wins.
+    providers:
+      - "ytsearch:\"%ISRC%\"" # exact recording by ISRC
+      - "ytmsearch:%QUERY%" # YouTube Music search (better for music)
+      - "ytsearch:%QUERY%" # YouTube search fallback
+      - "scsearch:%QUERY%" # SoundCloud fallback
+      # Deezer providers, only valid once sources.deezer is true AND both
+      # deezer secrets below are real:
+      # - "dzisrc:%ISRC%"
+      # - "dzsearch:%QUERY%"
+    sources:
+      spotify: true # required for spsearch, which /spotifyplaylist depends on
+      applemusic: false
+      deezer: false # needs masterDecryptionKey + arl, see below
+      yandexmusic: false
+      flowerytts: false
+      youtube: true # LavaSearch
+      vkmusic: false
+      tidal: false
+      qobuz: false
+      ytdlp: false # also needs yt-dlp on PATH
+      jiosaavn: false
+    lyrics-sources:
+      spotify: false
+      deezer: false
+      youtube: false
+      yandexmusic: false
+      vkmusic: false
+      lrcLib: false
+    spotify:
+      # Required for spsearch.
+      clientId: b9a4b5775f1847a2b072573589b530f7
+      clientSecret: 682ef411fa5942d28bfe6c409e90f202
+      # spDc: "your sp dc cookie" # cookie for the spotify lyrics api
+      countryCode: US
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
+      resolveArtistsInSearch: true
+      # MUST stay false: no "local" source is enabled, so local file lookups
+      # cannot resolve and would blank out the track.
+      localFiles: false
+      # MUST stay false. preferAnonymousToken routes every lookup through
+      # customTokenEndpoint, and nothing listens on that port, so leaving it true
+      # fails every Spotify search. We authenticate with the app credentials.
+      preferAnonymousToken: false
+    applemusic:
+      countryCode: US
+      # mediaAPIToken: "your apple music api token"
+      playlistLoadLimit: 3
+      albumLoadLimit: 3
+    deezer:
+      # BOTH must be real before sources.deezer can be set true. A non-empty
+      # placeholder is worse than none: the node boots, then every Deezer call
+      # fails with a confusing decryption error instead of a clear "key not set".
+      # masterDecryptionKey: "your master decryption key" # you must source this
+      # arl: "your deezer arl" # not optional in current LavaSrc
+      formats: [ FLAC, MP3_320, MP3_256, MP3_128, MP3_64, AAC_64 ] # FLAC / MP3_320 / MP3_256 / AAC_64 are premium-only and need a valid arl
+    yandexmusic:
+      # accessToken: "your access token"
+      playlistLoadLimit: 1
+      albumLoadLimit: 1
+      artistLoadLimit: 1
+      # proxy:
+      #   url: "https://example.org"
+      #   username: "my-bot"
+      #   password: "youshallpass"
+    flowerytts:
+      voice: Olivia
+      translate: false
+      silence: 0
+      speed: 1.0
+      audioFormat: mp3
+    youtube:
+      countryCode: US
+      language: en
+    vkmusic:
+      # userToken: "your user token"
+      playlistLoadLimit: 1
+      artistLoadLimit: 1
+      recommendationsLoadLimit: 10
+    tidal:
+      countryCode: US
+      searchLimit: 6
+      # token: "your tidal token"
+    qobuz:
+      # userOauthToken: "your qobuz user oauth token"
+      # appId: # optional, only for an old userOauthToken
+      # appSecret: # optional, only for an old userOauthToken
+    ytdlp:
+      # Only read when sources.ytdlp is true, which also needs yt-dlp on PATH.
+      path: yt-dlp
+      searchLimit: 10
+    jiosaavn:
+      decryption:
+        # secretKey: "??" # find your own; required only if sources.jiosaavn is true
+        algorithm: DES
+        transformation: DES/ECB/PKCS5Padding
+      # proxy:
+      #   url: "https://example.org"
+      #   username: "my-bot"
+      #   password: "youshallpass"
+
+lavalink:
+  # Versions MUST match the jars in ./plugins, otherwise this file lies about
+  # what is actually running: Lavalink loads whatever jar is present in
+  # pluginsDir, and the declared coordinates are only used to auto-download a
+  # missing one.
+  #
+  # Removed, because no jar was ever shipped for them and the bot has no caller:
+  #   skybot-lavalink-plugin — bot has its own TTS (src/commands/tts.ts)
+  #   lavalyrics-plugin      — bot has its own lyrics (shared/lyricsservice.ts,
+  #                            utils/lrclib.ts, utils/musixmatch.ts)
+  #   sponsorblock-plugin    — zero references in the bot
+  # Leaving them declared would make every boot depend on reaching
+  # maven.lavalink.dev to download them.
+  plugins:
+    - dependency: dev.lavalink.youtube:youtube-plugin:1.18.2
+      snapshot: false
+    - dependency: com.github.topi314.lavasrc:lavasrc-plugin:4.8.3
+      snapshot: false
+    - dependency: com.github.topi314.lavasearch:lavasearch-plugin:1.0.0
+      snapshot: false
+  pluginsDir: './plugins'
+  server:
+    # NOT Lavalink's default ("youshallnotpass"). This node is internet-facing
+    # with http:true, so a default-password node is an open relay on our IP.
+    password: sandesh # MUST match NODE_PASSWORD in the bot's .env
+    sources:
+      youtube: false # REQUIRED off — youtube-source replaces the deprecated built-in
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      nico: true
+      http: true # warning: without a proxy this exposes your server's IP
+      local: false
+    filters:
+      # These are memory-hungry on a 1 GB box. /karaoke and nightcore are the
+      # first things to OOM — disable here if players start dying.
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+    nonAllocatingFrameBuffer: false
+    bufferDurationMs: 225
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 5
+    resamplingQuality: LOW # HIGH is "the most CPU"; this box has 1 vCPU
+    trackStuckThresholdMs: 5000
+    useSeekGhosting: true
+    youtubePlaylistLoadLimit: 6 # 6 x 100 = 600. Was 3 (300), which silently
+                                 # truncated the large /spotifyplaylist loads.
+    playerUpdateInterval: 3
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    soundcloudFilterOutPreviewTracks: true
+    gc-warnings: true
+    # Raised from the 3000ms default because the remote cipher call is an extra
+    # internet round trip to cipher.kikkia.dev on the playback path. yt-cipher's
+    # own README recommends 10000 for exactly this reason. Too low and playback
+    # fails with a read timeout that looks like a YouTube problem.
+    timeouts:
+      connectTimeoutMs: 10000
+      connectionRequestTimeoutMs: 10000
+      socketTimeoutMs: 10000
+    # ratelimit is intentionally OFF. A 32-bit IPv4 block is a single address,
+    # not rotation, and this host has no global IPv6. Enable only with a routed
+    # /48:
+    # ratelimit:
+    #   ipBlocks:
+    #     - "2001:db8::/48"
+    #   excludedIps: []
+    #   strategy: "RotatingNanoSwitch"
+    #   searchTriggersFail: true
+    #   retryLimit: -1
+    #
+    # youtubeConfig (the deprecated age-restriction bypass for the built-in
+    # youtube source) was removed: it is a no-op with youtube:false and it was
+    # carrying literal "your account mail" / "your account password" values.
+    #
+    # httpConfig is the escape hatch if YouTube keeps blocking this IP — point
+    # outbound traffic at a residential proxy:
+    # httpConfig:
+    #   proxyHost: localhost
+    #   proxyPort: 3128
+    #   proxyUser:
+    #   proxyPassword:
+
+metrics:
+  prometheus:
+    enabled: false
+    endpoint: /metrics
+
+# Sentry block removed. dsn and environment were empty strings, which only made
+# Lavalink log "Turning off sentry" at every boot. Omitting the block is
+# identical — the embedded default is also empty.
+
+logging:
+  file:
+    path: ./logs/
+  level:
+    root: INFO
+    lavalink: INFO
+    # Surfaces OAuth refresh success/failure without raising the global level.
+    dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
+  request:
+    enabled: true
+    includeClientInfo: true
+    # FALSE on purpose: with true, Lavalink writes request headers to disk and
+    # the OAuth Authorization header lands in the log file in plaintext.
+    includeHeaders: false
+    includeQueryString: true
+    # FALSE on purpose: with true, request bodies are written to disk, which
+    # includes the OAuth refresh token and the Spotify client secret.
+    includePayload: false
+    maxPayloadLength: 1000
+  logback:
+    # MUST be all lowercase. The key is "rollingpolicy" (see the jar's own
+    # BOOT-INF/classes/application.yml.example). Spring silently ignores
+    # "rollingPolicy", so the wrong casing means NO log rotation at all.
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 5
