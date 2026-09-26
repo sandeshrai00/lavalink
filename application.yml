@@ -58,36 +58,54 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    # Clients queried in order. All eight names below are real identifiers in
-    # 1.18.2 (verified against the jar's client classes) — notably WEBEMBEDDED,
-    # which the previous config misspelled as TVHTML5EMBEDDED and which was
-    # therefore silently dropped at every boot.
+    # Clients queried IN ORDER, and the order is load-bearing. youtube-source
+    # walks this list and stops at the first client that returns a playable
+    # format, so every entry above the winner costs one HTTP round trip to
+    # youtubei.googleapis.com that is guaranteed to fail.
     #
-    # Capabilities differ per client and this is why playback is still
-    # best-effort from a datacenter IP:
-    #   TV          — the ONLY OAuth-capable client. Needs sign-in to play.
-    #   ANDROID_VR  — Opus, no OAuth, heavily gated on datacenter IPs.
-    #   IOS/MWEB    — player-API changes break them independently of IP.
-    #   WEB         — YouTube now often returns SABR-only responses with no
-    #                 per-format stream URL, so it can report
-    #                 "No supported audio streams available" while audio itags
-    #                 are visibly present in the JSON.
-    #   MUSIC       — search only (see clientOptions below).
+    # MEASURED, not guessed (youtube-plugin 2be8e542d, DEBUG log, video
+    # fSKtPBRV1gE / PILLOWTALK):
+    #   ANDROID_VR     -> fails, 264ms wasted
+    #   ANDROID_MUSIC  -> fails, 121ms wasted
+    #   IOS            -> WORKS, chain stops
+    #   total wasted before success: 388ms
+    #
+    # Separately verified on the VPS node with each client forced in isolation
+    # (one request at a time, spaced, to avoid YouTube rate-limiting the test):
+    #   IOS      works  (audio/mp4 3283816b and 3449447b on two videos)
+    #   TVHTML5  works  (video/mp4 3766541b) — needs OAuth, which we have
+    #   WEB/MWEB/ANDROID_VR  inconsistent, not trusted
+    #   WEB_EMBEDDED_PLAYER, ANDROID_MUSIC  dead (small JSON error both videos)
+    #
+    # So: the two proven winners go first, OAuth second as the safety net, and
+    # the rest trail behind as backups. If IOS ever regresses, TVHTML5 catches
+    # it without walking six failures first.
+    #
+    # All names below are real identifiers in 2be8e542d (verified against
+    # ClientProviderV4.java). At boot the plugin renames some of them:
+    # MUSIC -> WEB_REMIX, WEBEMBEDDED -> WEB_EMBEDDED_PLAYER, TV -> TVHTML5.
+    # That aliasing is expected, not an error.
+    #
+    #   IOS      — proven winner, no OAuth needed
+    #   TV       — the ONLY OAuth-capable client; needs sign-in to play
+    #   MWEB/WEB — backup
+    #   MUSIC    — search only (see clientOptions below); do NOT drop it, it is
+    #              serving the ytmsearch calls the bot depends on
     # Do not add ANDROID ("heavily restricted, frequently dysfunctional" upstream)
-    # or TVHTML5_SIMPLY. More weak clients lengthen the failure path without
-    # adding a working one.
+    # or TVHTML5_SIMPLY.
     clients:
-      - ANDROID_VR
-      - ANDROID_MUSIC
       - IOS
+      - TV
       - MWEB
       - WEB
       - MUSIC
       - WEBEMBEDDED
-      - TV
+      - ANDROID_VR
+      - ANDROID_MUSIC
     clientOptions:
-      # TV is listed last on purpose. It needs OAuth2 sign-in to play, and the
-      # burned-in account is the only thing that can satisfy that.
+      # IOS is first now, not TV. TV sits second: it needs OAuth2 sign-in to
+      # play, and the burned-in account is the only thing that can satisfy that,
+      # so it is the fallback when IOS is gated.
       TV:
         playback: true # Requires sign-in (OAuth2)
         playlistLoading: false
@@ -307,21 +325,34 @@ lavalink:
       rotation: true
       channelMix: true
       lowPass: true
-    nonAllocatingFrameBuffer: false
-    # 400ms is the Lavalink default and the documented value for weak hosts.
-    # The previous 225ms left no headroom for a GC pause on a 1 vCPU/1 GB box,
-    # which shows up as audible underruns. 40ms is the hard minimum; <=0
-    # disables JDA-NAS.
-    bufferDurationMs: 400
+    # Was false. Official comment: "Setting to true reduces the number of
+    # allocations made by each player at the expense of frame rebuilding
+    # (e.g. non-instantaneous volume changes)". Fewer allocations = fewer GC
+    # pauses = fewer underruns. The stated cost does not matter here: the bot
+    # sets volume once at track start, not mid-track.
+    nonAllocatingFrameBuffer: true
+    # 400ms is the Lavalink DEFAULT, not a tuned value. Official comment:
+    # "Higher values fare better against longer GC pauses. Minimum of 40ms,
+    # lower values may introduce pauses." History: 225ms -> audible underruns,
+    # then 400 (still the default) -> occasional stutter. 800ms buys real
+    # headroom for a GC pause. Costs a little latency; 40ms is the hard
+    # minimum and <=0 disables JDA-NAS entirely.
+    bufferDurationMs: 800
     frameBufferDurationMs: 5000
-    # Official default is 10. Stepped to 8: this only affects the transcoding
-    # path, and 10 + filters on 1 vCPU risks stutter. Raise to 10 only after
-    # /v4/stats shows lavalinkLoad well under 1.0.
-    opusEncodingQuality: 8
-    # LOW is the official default and HIGH is documented as "the most CPU".
-    # MEDIUM is a small step up that this box should absorb; revert to LOW if
-    # /v4/stats frameStats.deficit climbs above 0.
-    resamplingQuality: MEDIUM
+    # Raised 8 -> 10. The previous note said "raise to 10 only after
+    # /v4/stats shows lavalinkLoad well under 1.0". Panel CPU while playing is
+    # ~10% of 100%, so that condition is met. Official comment: "10 is best
+    # quality but is the most expensive on the CPU" — affordable at this
+    # headroom. NOTE: /v4/stats returns frameStats:null inside the OptiKLink
+    # container, so lavalinkLoad cannot actually be read there. Panel CPU is
+    # the only load signal available; re-check it after this change.
+    opusEncodingQuality: 10
+    # Raised MEDIUM -> HIGH. Official comment: "LOW, MEDIUM and HIGH, where
+    # HIGH uses the most CPU". This matters more than it looks: measured
+    # sources are mixed sample rate (PILLOWTALK 44100 Hz, Never Gonna Give You
+    # Up 48000 Hz) and Discord voice wants 48 kHz, so every 44.1 kHz track
+    # resamples on top of encoding. At 10% CPU, HIGH is affordable.
+    resamplingQuality: HIGH
     # Was 5000. Too low: a marginally slow source got abandoned before it had
     # a chance to recover, turning a slow track into a hard failure.
     trackStuckThresholdMs: 10000
@@ -383,6 +414,20 @@ logging:
     lavalink: INFO
     # Surfaces OAuth refresh success/failure without raising the global level.
     dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
+    # TEMPORARY DIAGNOSTIC — all three were DEBUG, now reverted to INFO.
+    # Uncomment to answer "which YouTube client served this track?" and to
+    # confirm the audio settings above were actually applied. Revert again after
+    # reading the log: dev.lavalink.youtube at DEBUG is extremely chatty and
+    # will itself load a 1 vCPU box.
+    #   lavalink.server.config: DEBUG      -> "Using a non-allocating frame
+    #        buffer", "Setting opusEncodingQuality to 10", "Setting resamplingQuality
+    #        to HIGH", "Setting frame buffer duration to 5000ms"
+    #   dev.lavalink.youtube: DEBUG        -> "attempting to use client X",
+    #        "Client X threw a non-fatal exception", and which one succeeds
+    #   dev.arbjerg.lavalink.player: DEBUG -> track start/stop timing
+    # NOTE: bufferDurationMs is applied by KoeConfiguration (JDA-NAS), NOT by
+    # AudioPlayerConfiguration, so it never appears in the DEBUG output above.
+    # Its wiring was confirmed from the 4.2.2 bytecode, not from a log line.
   request:
     enabled: true
     includeClientInfo: true
