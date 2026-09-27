@@ -1,0 +1,600 @@
+# ============================================================================
+#  APPLICATION.YML — SLUGYZEON VARIANT (drop-in for the current VPS)
+# ============================================================================
+#  This is your existing config with ONE experiment swapped in: the Spotify
+#  source moves from LavaSrc to SlugYZeon, to see whether it improves
+#  /spotifyplaylist. Port, password, audio tuning, cipher, client order and
+#  all the comments below are UNCHANGED from the production file, so this is a
+#  straight paste-and-restart.
+#
+#  ---------------------------------------------------------------------------
+#  REVERTING (takes about 20 seconds)
+#  ---------------------------------------------------------------------------
+#  1. plugins.lavasrc.sources.spotify: true
+#  2. delete the whole plugins.slugyzeon block
+#  3. delete the slugyzeon dependency line from lavalink.plugins
+#  4. restore clientId/clientSecret in plugins.lavasrc.spotify (they are blank
+#     in this file — the values live in application.yml)
+#  5. restart
+#
+#  plugins.lavasearch.sources needs NO change either way: "spotify" resolves to
+#  whichever plugin currently provides that source name, and both do.
+#
+#  The bot needs NO code change either way: SlugYZeon registers itself as
+#  source name "spotify", identical to LavaSrc, so spPlaylist.ts keeps working
+#  untouched. Only the node restarts.
+#
+#  ---------------------------------------------------------------------------
+#  THE JAR: PULLED AUTOMATICALLY FROM JITPACK, NOTHING TO BUILD OR COPY
+#  ---------------------------------------------------------------------------
+#  SlugYZeon IS published, but not to maven.lavalink.dev — it is on JitPack,
+#  which builds straight from the git tag:
+#
+#    com.github.xylen-py.SlugYZeon:slugyzeon-plugin:4.2.2
+#      repository: https://jitpack.io
+#
+#  Verified: 4.2.2 and 4.4.7 both return a real ~172KB jar. Pinned to 4.2.2 to
+#  match this node; both compile against lavalink-api 4.0.6, so either loads.
+#  There is NO local build step and nothing to copy into plugins/.
+#
+#  CAVEAT, and it is a real one: a listed dependency means EVERY BOOT reaches
+#  out to jitpack.io. Once downloaded it is cached under ~/.lavalink/plugins and
+#  later boots are offline-safe, but if the panel wipes that cache — or JitPack
+#  is rate-limiting or mid-rebuild — the node can fail to start. The existing
+#  note further down about not depending on maven.lavalink.dev applies here too.
+#  If that turns out to be a problem, build the jar once and drop it in plugins/
+#  instead; Lavalink loads every jar in that folder whether or not it is listed.
+#
+#  ---------------------------------------------------------------------------
+#  WHAT TO WATCH WHEN IT BOOTS
+#  ---------------------------------------------------------------------------
+#  * A playlist that comes back SHORT with nothing in the log is a real plugin
+#    bug, not a config problem. SlugYZeon swallows exceptions (empty catch
+#    around its page futures, .exceptionally(ex -> null) per track), so a
+#    timeout turns into a silently truncated playlist. Short playlist = fail.
+#
+#  * The slugyzeon.providers block below is NOT optional. SlugYZeon's built-in
+#    default is only ytsearch:"%ISRC%" and ytsearch:%QUERY% — no ytmsearch.
+#    This node depends on ytmsearch, and the MUSIC client exists to serve it.
+#    Without that block your fallback quality silently regresses and it would
+#    look like the plugin's fault.
+#
+#  * To answer "does it improve", load the same big playlist twice. Load 2
+#    should make ZERO Spotify metadata calls (50k-entry ISRC cache) but STILL
+#    the same number of YouTube lookups. The YouTube count not dropping is
+#    expected and is not a failure — the mirroring step is deliberately
+#    uncached, and that is the separate problem (SlugYZeon-YTCDN) not this test.
+# ============================================================================
+
+server:
+  port: 5549
+  address: 0.0.0.0
+  http2:
+    enabled: false
+
+plugins:
+  youtube:
+    enabled: true
+    oauth:
+      # One of the few real levers against YouTube gating this VPS's datacenter
+      # IP. Burner account — risk of ban from Google/YouTube.
+      enabled: true
+      refreshToken: 1//05eVJMrhyUcq2CgYIARAAGAUSNwF-L9Ir3gEa6DSFX0YleFRB0OjyNolItThNkeWsBx6MN0D0_Pws4kacKMQsxTSHZZatAeaxx5k
+      # We hand over a token, so skip the interactive browser setup.
+      skipInitialization: true
+    # pot is intentionally NOT set. The only generator for it
+    # (iv-org/youtube-trusted-session-generator) is deprecated and does not work
+    # with YouTube's current token method, and it must be run from the blocked
+    # IP anyway. Its replacement is a whole separate service.
+    #
+    # remoteCipher offloads signature deciphering to yt-cipher, which wraps
+    # yt-dlp/ejs. This is REQUIRED right now, not an optimisation.
+    #
+    # youtube-plugin 1.18.2's built-in LocalSignatureCipherManager cannot find
+    # the sig function in YouTube's current player script:
+    #   ERROR LocalSignatureCipherManager : Problematic YouTube player script
+    #   /s/player/7460dd14/player_embed.vflset/it_IT/base.js detected
+    #   (issue detected with script: must find sig function)
+    # That kills MWEB and TVHTML5 outright, and TVHTML5 is the only OAuth-capable
+    # client we run — so this also unblocks the OAuth token we already hold.
+    #
+    # The plugin's local extractor is the thing that broke; there is no newer
+    # youtube-plugin release to upgrade to (1.18.2 is current). yt-cipher tracks
+    # YouTube's changes independently.
+    #
+    # The public instance is rate-limited to 10 req/sec, which is fine for one
+    # node. Self-host with Deno if it ever becomes a problem.
+    #
+    # RELEVANT TO THIS TEST: SlugYZeon's YouTubeSourceManager is a *wrapper*,
+    # not a replacement. It looks up the source named "youtube" and routes
+    # playback through it. With youtube-source removed there is nothing to wrap
+    # and every Spotify track fails to mirror — so this block must stay exactly
+    # as it is. Do not "simplify" it away while testing the Spotify source.
+    remoteCipher:
+      url: https://cipher.kikkia.dev/
+      userAgent: aura-musicbot-node1 # optional; identifies us in their metrics
+      # No password: the public instance does not require one. If you self-host
+      # and set API_TOKEN there, add it here as `password:`.
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    # Clients queried IN ORDER, and the order is load-bearing. youtube-source
+    # walks this list and stops at the first client that returns a playable
+    # format, so every entry above the winner costs one HTTP round trip to
+    # youtubei.googleapis.com that is guaranteed to fail.
+    #
+    # MEASURED, not guessed (youtube-plugin 2be8e542d, DEBUG log, video
+    # fSKtPBRV1gE / PILLOWTALK):
+    #   ANDROID_VR     -> fails, 264ms wasted
+    #   ANDROID_MUSIC  -> fails, 121ms wasted
+    #   IOS            -> WORKS, chain stops
+    #   total wasted before success: 388ms
+    #
+    # Separately verified on the VPS node with each client forced in isolation
+    # (one request at a time, spaced, to avoid YouTube rate-limiting the test):
+    #   IOS      works  (audio/mp4 3283816b and 3449447b on two videos)
+    #   TVHTML5  works  (video/mp4 3766541b) — needs OAuth, which we have
+    #   WEB/MWEB/ANDROID_VR  inconsistent, not trusted
+    #   WEB_EMBEDDED_PLAYER, ANDROID_MUSIC  dead (small JSON error both videos)
+    #
+    # So: the two proven winners go first, OAuth second as the safety net, and
+    # the rest trail behind as backups. If IOS ever regresses, TVHTML5 catches
+    # it without walking six failures first.
+    #
+    # All names below are real identifiers in 2be8e542d (verified against
+    # ClientProviderV4.java). At boot the plugin renames some of them:
+    # MUSIC -> WEB_REMIX, WEBEMBEDDED -> WEB_EMBEDDED_PLAYER, TV -> TVHTML5.
+    # That aliasing is expected, not an error.
+    #
+    #   IOS      — proven winner, no OAuth needed
+    #   TV       — the ONLY OAuth-capable client; needs sign-in to play
+    #   MWEB/WEB — backup
+    #   MUSIC    — search only (see clientOptions below); do NOT drop it, it is
+    #              serving the ytmsearch calls the bot depends on
+    # Do not add ANDROID ("heavily restricted, frequently dysfunctional" upstream)
+    # or TVHTML5_SIMPLY.
+    clients:
+      - IOS
+      - TV
+      - MWEB
+      - WEB
+      - MUSIC
+      - WEBEMBEDDED
+      - ANDROID_VR
+      - ANDROID_MUSIC
+    clientOptions:
+      # IOS is first now, not TV. TV sits second: it needs OAuth2 sign-in to
+      # play, and the burned-in account is the only thing that can satisfy that,
+      # so it is the fallback when IOS is gated.
+      TV:
+        playback: true # Requires sign-in (OAuth2)
+        playlistLoading: false
+        searching: false
+        videoLoading: false
+      WEB:
+        playback: true
+        playlistLoading: true
+        searching: true
+        videoLoading: true
+      MWEB:
+        playback: true
+        playlistLoading: true
+        searching: true
+        videoLoading: true
+      WEBEMBEDDED:
+        playback: true
+        playlistLoading: false
+        searching: false
+        videoLoading: true
+      # MUSIC reports to Lavalink as WEB_REMIX. Per the youtube-source client
+      # table it is SEARCH ONLY: no Opus formats, no playback support. It stays
+      # in the global clients list because the bot's defaultSearchPlatform is
+      # ytmsearch, which needs it for search. Setting playback:true here grants
+      # nothing and only makes the failure path noisier.
+      MUSIC:
+        playback: false
+        playlistLoading: false
+        searching: true
+        videoLoading: false
+      ANDROID_VR:
+        playback: true
+        playlistLoading: true
+        searching: true
+        videoLoading: true
+      ANDROID_MUSIC:
+        playback: true
+        playlistLoading: false
+        searching: true
+        videoLoading: true
+      IOS:
+        playback: true
+        playlistLoading: true
+        searching: true
+        videoLoading: true
+
+  # LavaSearch indexes these for in-app search lookups. Spelled out explicitly
+  # because the jar's built-in default has changed between releases.
+  #
+  # UNCHANGED FOR THIS TEST: "spotify" stays. LavaSearch queries registered
+  # sources by NAME, and SlugYZeon registers a source called "spotify" just as
+  # LavaSrc did — so this line keeps working with the source swapped. Removing
+  # it would silently break Spotify in /search.
+  lavasearch:
+    sources:
+      - spotify
+      - youtube
+
+  lavasrc:
+    # Order matters — first match wins.
+    providers:
+      - "ytsearch:\"%ISRC%\"" # exact recording by ISRC
+      - "ytmsearch:%QUERY%" # YouTube Music search (better for music)
+      - "ytsearch:%QUERY%" # YouTube search fallback
+      - "scsearch:%QUERY%" # SoundCloud fallback
+      # Deezer providers, only valid once sources.deezer is true AND both
+      # deezer secrets below are real:
+      # - "dzisrc:%ISRC%"
+      # - "dzsearch:%QUERY%"
+    sources:
+      # CHANGED FOR THIS TEST: was true, now false. THIS IS THE ONE-LINE
+      # REVERT. SlugYZeon registers a source also named "spotify"; both
+      # registered at once is a source-name collision, so exactly one may be on.
+      # The rest of this plugin stays on, because the bot's spsearch prefix and
+      # the sources below are untouched.
+      spotify: false # was: true (required for spsearch, which /spotifyplaylist depends on)
+      applemusic: false
+      deezer: false # needs masterDecryptionKey + arl, see below
+      yandexmusic: false
+      flowerytts: false
+      youtube: true # LavaSearch
+      vkmusic: false
+      tidal: false
+      qobuz: false
+      ytdlp: false # also needs yt-dlp on PATH
+      jiosaavn: false
+    lyrics-sources:
+      spotify: false
+      deezer: false
+      youtube: false
+      yandexmusic: false
+      vkmusic: false
+      lrcLib: false
+    spotify:
+      # BLANKED FOR THIS TEST — and they are genuinely not needed.
+      #
+      # LavaSrc's spotify source is switched off above, so these authenticate
+      # nothing. SlugYZeon has no clientId/clientSecret field at all: it hits
+      # spclient.wg.spotify.com with an anonymous token instead. Verified in
+      # SlugYZeonSpotifyConfig — the only fields that exist are countryCode,
+      # playlistLoadLimit, albumLoadLimit, resolveArtistsInSearch, localFiles.
+      #
+      # The real values live in application.yml. Copy them back here when you
+      # revert, or just delete this whole block.
+      #
+      # NOTE this is the NODE's credential. The bot keeps its own separate one
+      # in .env (a4d68b…) and still needs it — for spsearch, for cover art, and
+      # for the ytmsearch fallback track URIs. Those are the bot's calls, not
+      # the node's, so this test does not affect them.
+      clientId:
+      clientSecret:
+      # spDc: "your sp dc cookie" # cookie for the spotify lyrics api
+      countryCode: US
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
+      resolveArtistsInSearch: true
+      # MUST stay false: no "local" source is enabled, so local file lookups
+      # cannot resolve and would blank out the track.
+      localFiles: false
+      # MUST stay false. preferAnonymousToken routes every lookup through
+      # customTokenEndpoint, and nothing listens on that port, so leaving it true
+      # fails every Spotify search. We authenticate with the app credentials.
+      preferAnonymousToken: false
+    applemusic:
+      countryCode: US
+      # mediaAPIToken: "your apple music api token"
+      playlistLoadLimit: 3
+      albumLoadLimit: 3
+    deezer:
+      # BOTH must be real before sources.deezer can be set true. A non-empty
+      # placeholder is worse than none: the node boots, then every Deezer call
+      # fails with a confusing decryption error instead of a clear "key not set".
+      # masterDecryptionKey: "your master decryption key" # you must source this
+      # arl: "your deezer arl" # not optional in current LavaSrc
+      formats: [ FLAC, MP3_320, MP3_256, MP3_128, MP3_64, AAC_64 ] # FLAC / MP3_320 / MP3_256 / AAC_64 are premium-only and need a valid arl
+    yandexmusic:
+      # accessToken: "your access token"
+      playlistLoadLimit: 1
+      albumLoadLimit: 1
+      artistLoadLimit: 1
+      # proxy:
+      #   url: "https://example.org"
+      #   username: "my-bot"
+      #   password: "youshallpass"
+    flowerytts:
+      voice: Olivia
+      translate: false
+      silence: 0
+      speed: 1.0
+      audioFormat: mp3
+    youtube:
+      countryCode: US
+      language: en
+    vkmusic:
+      # userToken: "your vkmusic token"
+      playlistLoadLimit: 1
+      artistLoadLimit: 1
+      recommendationsLoadLimit: 10
+    tidal:
+      countryCode: US
+      searchLimit: 6
+      # token: "your tidal token"
+    qobuz:
+      # userOauthToken: "your qobuz user oauth token"
+      # appId: # optional, only for an old userOauthToken
+      # appSecret: # optional, only for an old userOauthToken
+    ytdlp:
+      # Only read when sources.ytdlp is true, which also needs yt-dlp on PATH.
+      path: yt-dlp
+      searchLimit: 10
+    jiosaavn:
+      decryption:
+        # secretKey: "??" # find your own; required only when sources.jiosaavn is true
+        algorithm: DES
+        transformation: DES/ECB/PKCS5Padding
+      # proxy:
+      #   url: "https://example.org"
+      #   username: "my-bot"
+      #   password: "youshallpass"
+
+  # ==========================================================================
+  # SLUGYZEON — the thing under test
+  # ==========================================================================
+  #  The whole hypothesis in one block. SlugYZeon hits spclient.wg.spotify.com
+  #  with an anonymous token instead of api.spotify.com with your app, so
+  #  b9a4b5's dev-mode quota stops governing the node entirely, and it caches
+  #  trackId -> ISRC in a 50,000-entry LRU with no TTL, so a repeat load costs
+  #  zero Spotify calls.
+  #
+  #  Two things to be clear about:
+  #   * It does NOT reduce the number of requests. Still one per track; they
+  #     just go 25-at-a-time in parallel. What changes is WHICH quota they hit.
+  #   * It does NOT cache the YouTube side. The mirroring lookup re-runs on
+  #     every single play. So this alone will not carry you to 1k concurrent
+  #     guilds — that is the separate SlugYZeon-YTCDN project.
+  #
+  #  Verified from source, not the README: there is no clientId and no
+  #  clientSecret anywhere in this config class. Only the fields below exist.
+  # ==========================================================================
+  slugyzeon:
+    sources:
+      # Default in the plugin is false, so this line is doing the real work.
+      spotify: true
+      # All off on purpose. Enable one at a time, deliberately, later.
+      amazonmusic: false
+      gaana: false
+      pandora: false
+      youtube: false
+    spotify:
+      countryCode: US
+      # 6 pages x 343 tracks = up to 2058 per load, vs 600 on LavaSrc.
+      # If a very large playlist comes back short, drop this to 2 and check
+      # whether it is a paging problem rather than a source problem.
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
+      resolveArtistsInSearch: true
+      # MUST stay false: no "local" source is enabled, so local file lookups
+      # cannot resolve and would blank out the track.
+      localFiles: false
+    # DO NOT DELETE. The plugin's own default array is:
+    #   ytsearch:"%ISRC%"
+    #   ytsearch:%QUERY%
+    # — no ytmsearch. This node depends on ytmsearch, and the MUSIC client
+    # exists specifically to serve it. Omitting this block silently regresses
+    # fallback quality and it would look like the plugin's fault.
+    #
+    # Quoting matches both the plugin's default AND the lavasrc block above, on
+    # purpose: identical chain in both plugins is what makes this a fair A/B.
+    # (A config in the wild drops the quotes around %ISRC%; that almost
+    # certainly still works, but do not "fix" it here — one variable at a time.)
+    providers:
+      - "ytsearch:\"%ISRC%\"" # exact recording by ISRC
+      - "ytmsearch:%QUERY%" # YouTube Music search (better for music)
+      - "ytsearch:%QUERY%" # YouTube search fallback
+      - "scsearch:%QUERY%" # SoundCloud fallback
+
+lavalink:
+  # Versions MUST match the jars in ./plugins, otherwise this file lies about
+  # what is actually running: Lavalink loads whatever jar is present in
+  # pluginsDir, and the declared coordinates are only used to auto-download a
+  # missing one.
+  #
+  # Removed, because no jar was ever shipped for them and the bot has no caller:
+  #   skybot-lavalink-plugin — bot has its own TTS (src/commands/tts.ts)
+  #   lavalyrics-plugin      — bot has its own lyrics (shared/lyricsservice.ts,
+  #                            utils/lrclib.ts, utils/musixmatch.ts)
+  #   sponsorblock-plugin    — zero references in the bot
+  # Leaving them declared would make every boot depend on reaching
+  # maven.lavalink.dev to download them.
+  #
+  # WARNING: Lavalink loads EVERY .jar it finds in pluginsDir, whether or not it
+  # is listed here. A stray jar in that folder loads silently.
+  plugins:
+    # NOT a release. 1.18.2 is broken for this region: it returns SABR-only
+    # responses (audio itags present, no `url`, no `formats` array, only
+    # serverAbrStreamingUrl with sabr=1), so every client fails.
+    # Upstream: lavalink-devs/youtube-source issue #240 (14 thumbs, still open).
+    #
+    # 2be8e542d is the child of f45bbb7a — the commit users report fixing #240 —
+    # plus PR #245 (cipher connection-starvation fix, signed off by a maintainer).
+    # It also carries Pot.java, so plugins.youtube.pot.{token,visitorData} exists
+    # here but NOT in 1.18.2.
+    #
+    # Snapshots are unreleased. When upstream ships a fix, re-pin to it.
+    - dependency: dev.lavalink.youtube:youtube-plugin:2be8e542d3f6f178e048dca565892684c2e40177
+      repository: https://maven.lavalink.dev/snapshots
+      snapshot: true
+    # ADDED FOR THIS TEST. JitPack builds this from the git tag, which is why it
+    # is not on maven.lavalink.dev. Pinned to 4.2.2 to match this node — it is
+    # the plugin's own version, but the pairing is with the Lavalink release it
+    # was cut alongside, and both tags compile against lavalink-api 4.0.6.
+    # Leaving this out while keeping plugins.slugyzeon below is the failure mode
+    # to watch for on first boot: the node starts fine, the config block is
+    # simply ignored because nothing registered those properties, and every
+    # /spotifyplaylist fails at resolve with no obvious cause.
+    - dependency: com.github.xylen-py.SlugYZeon:slugyzeon-plugin:4.2.2
+      repository: https://jitpack.io
+    # KEPT, and still required, even though its spotify source is now off:
+    # the bot's spsearch prefix and lavasearch still resolve through it, and
+    # it is what makes the revert a one-line flip instead of a jar shuffle.
+    - dependency: com.github.topi314.lavasrc:lavasrc-plugin:4.8.3
+      snapshot: false
+    - dependency: com.github.topi314.lavasearch:lavasearch-plugin:1.0.0
+      snapshot: false
+  pluginsDir: './plugins'
+  server:
+    # NOT Lavalink's default ("youshallnotpass"). This node is internet-facing
+    # with http:true, so a default-password node is an open relay on our IP.
+    password: sandesh # MUST match NODE_PASSWORD in the bot's .env
+    sources:
+      youtube: false # REQUIRED off — youtube-source replaces the deprecated built-in
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      nico: true
+      http: true # warning: without a proxy this exposes your server's IP
+      local: false
+    filters:
+      # These are memory-hungry on a 1 GB box. /karaoke and nightcore are the
+      # first things to OOM — disable here if players start dying.
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+    # Was false. Official comment: "Setting to true reduces the number of
+    # allocations made by each player at the expense of frame rebuilding
+    # (e.g. non-instantaneous volume changes)". Fewer allocations = fewer GC
+    # pauses = fewer underruns. The stated cost does not matter here: the bot
+    # sets volume once at track start, not mid-track.
+    nonAllocatingFrameBuffer: true
+    # 400ms is the Lavalink DEFAULT, not a tuned value. Official comment:
+    # "Higher values fare better against longer GC pauses. Minimum of 40ms,
+    # lower values may introduce pauses." History: 225ms -> audible underruns,
+    # then 400 (still the default) -> occasional stutter. 800ms buys real
+    # headroom for a GC pause. Costs a little latency; 40ms is the hard
+    # minimum and <=0 disables JDA-NAS entirely.
+    bufferDurationMs: 800
+    frameBufferDurationMs: 5000
+    # Raised 8 -> 10. The previous note said "raise to 10 only after
+    # /v4/stats shows lavalinkLoad well under 1.0". Panel CPU while playing is
+    # ~10% of 100%, so that condition is met. Official comment: "10 is best
+    # quality but is the most expensive on the CPU" — affordable at this
+    # headroom. NOTE: /v4/stats returns frameStats:null inside the OptiKLink
+    # container, so lavalinkLoad cannot actually be read there. Panel CPU is
+    # the only load signal available; re-check it after this change.
+    opusEncodingQuality: 10
+    # Raised MEDIUM -> HIGH. Official comment: "LOW, MEDIUM and HIGH, where
+    # HIGH uses the most CPU". This matters more than it looks: measured
+    # sources are mixed sample rate (PILLOWTALK 44100 Hz, Never Gonna Give You
+    # Up 48000 Hz) and Discord voice wants 48 kHz, so every 44.1 kHz track
+    # resamples on top of encoding. At 10% CPU, HIGH is affordable.
+    resamplingQuality: HIGH
+    # Was 5000. Too low: a marginally slow source got abandoned before it had
+    # a chance to recover, turning a slow track into a hard failure.
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    youtubePlaylistLoadLimit: 6 # 6 x 100 = 600. Was 3 (300), which silently
+                                 # truncated the large /spotifyplaylist loads.
+    # Was 3. The official default is 5; 3 only adds websocket traffic and CPU
+    # for no benefit on a single-node setup.
+    playerUpdateInterval: 5
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    soundcloudFilterOutPreviewTracks: true
+    gc-warnings: true
+    # Raised from the 3000ms default because the remote cipher call is an extra
+    # internet round trip to cipher.kikkia.dev on the playback path. yt-cipher's
+    # own README recommends 10000 for exactly this reason. Too low and playback
+    # fails with a read timeout that looks like a YouTube problem.
+    timeouts:
+      connectTimeoutMs: 10000
+      connectionRequestTimeoutMs: 10000
+      socketTimeoutMs: 10000
+    # ratelimit is intentionally OFF. A 32-bit IPv4 block is a single address,
+    # not rotation, and this host has no global IPv6. Enable only with a routed
+    # /48:
+    # ratelimit:
+    #   ipBlocks:
+    #     - "2001:db8::/48"
+    #   excludedIps: []
+    #   strategy: "RotatingNanoSwitch"
+    #   searchTriggersFail: true
+    #   retryLimit: -1
+    #
+    # youtubeConfig (the deprecated age-restriction bypass for the built-in
+    # youtube source) was removed: it is a no-op with youtube:false and it was
+    # carrying literal "your account mail" / "your account password" values.
+    #
+    # httpConfig is the escape hatch if YouTube keeps blocking this IP — point
+    # outbound traffic at a residential proxy:
+    # httpConfig:
+    #   proxyHost: localhost
+    #   proxyPort: 3128
+    #   proxyUser:
+    #   proxyPassword:
+
+metrics:
+  prometheus:
+    enabled: false
+    endpoint: /metrics
+
+# Sentry block removed. dsn and environment were empty strings, which only made
+# Lavalink log "Turning off sentry" at every boot. Omitting the block is
+# identical — the embedded default is also empty.
+
+logging:
+  file:
+    path: ./logs/
+  level:
+    root: INFO
+    lavalink: INFO
+    # Surfaces OAuth refresh success/failure without raising the global level.
+    dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
+    # TEMPORARY DIAGNOSTIC — all three were DEBUG, now reverted to INFO.
+    # Uncomment to answer "which YouTube client served this track?" and to
+    # confirm the audio settings above were actually applied. Revert again after
+    # reading the log: dev.lavalink.youtube at DEBUG is extremely chatty and
+    # will itself load a 1 vCPU box.
+    #   lavalink.server.config: DEBUG      -> "Using a non-allocating frame
+    #        buffer", "Setting opusEncodingQuality to 10", "Setting resamplingQuality
+    #        to HIGH", "Setting frame buffer duration to 5000ms"
+    #   dev.lavalink.youtube: DEBUG        -> "attempting to use client X",
+    #        "Client X threw a non-fatal exception", and which one succeeds
+    #   dev.arbjerg.lavalink.player: DEBUG -> track start/stop timing
+    # NOTE: bufferDurationMs is applied by KoeConfiguration (JDA-NAS), NOT by
+    # AudioPlayerConfiguration, so it never appears in the DEBUG output above.
+    # Its wiring was confirmed from the 4.2.2 bytecode, not from a log line.
+  request:
+    enabled: true
+    includeClientInfo: true
+    # FALSE on purpose: with true, Lavalink writes request headers to disk and
+    # the OAuth Authorization header lands in the log file in plaintext.
+    includeHeaders: false
+    includeQueryString: true
+    # FALSE on purpose: with true, request bodies are written to disk, which
+    # includes the OAuth refresh token and the Spotify client secret.
+    includePayload: false
+    maxPayloadLength: 1000
+  logback:
+    # MUST be all lowercase. The key is "rollingpolicy" (see the jar's own
+    # BOOT-INF/classes/application.yml.example). Spring silently ignores
+    # "rollingPolicy", so the wrong casing means NO log rotation at all.
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 5
