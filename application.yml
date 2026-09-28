@@ -198,6 +198,30 @@ plugins:
       playlistLoadLimit: 6
       albumLoadLimit: 6
       resolveArtistsInSearch: true
+      # TRUE (was absent = false). This is what makes /addrelated work.
+      #
+      # Spotify retired the public recommendations endpoint in Nov 2024 —
+      # /v1/recommendations and /v1/artists/{id}/related-artists now 404, both
+      # verified against this project's credentials. LavaSrc's getRecommendations
+      # has two routes: the partner API (api-partner.spotify.com/pathfinder) and
+      # the retired v1 endpoint, and it picks between them with THIS flag.
+      #
+      # With it false, the v1 route is used, it 404s, and the command silently
+      # returns nothing. With it true, requests go to the partner API, which is
+      # still live. If the partner call fails, LavaSrc logs
+      #   "Partner API recommendations failed for '...', falling back to Spotify v1 API"
+      # and falls back — so this cannot make anything worse than the current
+      # behaviour, it is the current behaviour with a working route tried first.
+      #
+      # It also moves SEARCH off api.spotify.com and onto the partner API, which
+      # takes /spotifyplaylist and spsearch off the dev-mode quota. Search falls
+      # back to v1 if the partner returns nothing, and v1 search still works
+      # (verified 200), so /spotifyplaylist is unaffected either way.
+      #
+      # application-slugyzeon.yml needs no equivalent: SlugYZeon has no such flag
+      # and always uses its pathfinder route. This block is only here so the
+      # OTHER file matches.
+      preferPartnerApi: true
       # MUST stay false: no "local" source is enabled, so local file lookups
       # cannot resolve and would blank out the track.
       localFiles: false
