@@ -1,73 +1,19 @@
-# ============================================================================
-#  APPLICATION.YML — SLUGYZEON VARIANT (drop-in for the current VPS)
-# ============================================================================
-#  This is your existing config with ONE experiment swapped in: the Spotify
-#  source moves from LavaSrc to SlugYZeon, to see whether it improves
-#  /spotifyplaylist. Port, password, audio tuning, cipher, client order and
-#  all the comments below are UNCHANGED from the production file, so this is a
-#  straight paste-and-restart.
+# Lavalink 4.2.2 (OptikLink panel image) — 1 vCPU / 1 GB VPS.
 #
-#  ---------------------------------------------------------------------------
-#  REVERTING (takes about 20 seconds)
-#  ---------------------------------------------------------------------------
-#  1. plugins.lavasrc.sources.spotify: true
-#  2. delete the whole plugins.slugyzeon block
-#  3. delete the slugyzeon dependency line from lavalink.plugins
-#  4. restore clientId/clientSecret in plugins.lavasrc.spotify (they are blank
-#     in this file — the values live in application.yml)
-#  5. restart
+# Secrets are INLINE because the panel runs a fixed `java -jar Lavalink.jar` with
+# no environment variables. Do not reintroduce ${VAR} placeholders: Spring does
+# not understand bash `${VAR:?message}` syntax, and the node dies at boot with
+# "Invalid status code for oauth2 token fetch: 400". That already happened once.
 #
-#  plugins.lavasearch.sources needs NO change either way: "spotify" resolves to
-#  whichever plugin currently provides that source name, and both do.
+# server.port must match NODE_PORT in the bot's .env (5549).
+# lavalink.server.password must match NODE_PASSWORD in the bot's .env.
 #
-#  The bot needs NO code change either way: SlugYZeon registers itself as
-#  source name "spotify", identical to LavaSrc, so spPlaylist.ts keeps working
-#  untouched. Only the node restarts.
-#
-#  ---------------------------------------------------------------------------
-#  THE JAR: PULLED AUTOMATICALLY FROM JITPACK, NOTHING TO BUILD OR COPY
-#  ---------------------------------------------------------------------------
-#  SlugYZeon IS published, but not to maven.lavalink.dev — it is on JitPack,
-#  which builds straight from the git tag:
-#
-#    com.github.xylen-py.SlugYZeon:slugyzeon-plugin:4.2.2
-#      repository: https://jitpack.io
-#
-#  Verified: 4.2.2 and 4.4.7 both return a real ~172KB jar. Pinned to 4.2.2 to
-#  match this node; both compile against lavalink-api 4.0.6, so either loads.
-#  There is NO local build step and nothing to copy into plugins/.
-#
-#  CAVEAT, and it is a real one: a listed dependency means EVERY BOOT reaches
-#  out to jitpack.io. Once downloaded it is cached under ~/.lavalink/plugins and
-#  later boots are offline-safe, but if the panel wipes that cache — or JitPack
-#  is rate-limiting or mid-rebuild — the node can fail to start. The existing
-#  note further down about not depending on maven.lavalink.dev applies here too.
-#  If that turns out to be a problem, build the jar once and drop it in plugins/
-#  instead; Lavalink loads every jar in that folder whether or not it is listed.
-#
-#  ---------------------------------------------------------------------------
-#  WHAT TO WATCH WHEN IT BOOTS
-#  ---------------------------------------------------------------------------
-#  * A playlist that comes back SHORT with nothing in the log is a real plugin
-#    bug, not a config problem. SlugYZeon swallows exceptions (empty catch
-#    around its page futures, .exceptionally(ex -> null) per track), so a
-#    timeout turns into a silently truncated playlist. Short playlist = fail.
-#
-#  * The slugyzeon.providers block below is NOT optional. SlugYZeon's built-in
-#    default is only ytsearch:"%ISRC%" and ytsearch:%QUERY% — no ytmsearch.
-#    This node depends on ytmsearch, and the MUSIC client exists to serve it.
-#    Without that block your fallback quality silently regresses and it would
-#    look like the plugin's fault.
-#
-#  * To answer "does it improve", load the same big playlist twice. Load 2
-#    should make ZERO Spotify metadata calls (50k-entry ISRC cache) but STILL
-#    the same number of YouTube lookups. The YouTube count not dropping is
-#    expected and is not a failure — the mirroring step is deliberately
-#    uncached, and that is the separate problem (SlugYZeon-YTCDN) not this test.
-# ============================================================================
+# Audio settings below are a deliberate compromise, not the Lavalink defaults.
+# See the comments on each value: 1 vCPU cannot afford opus 10 + HIGH resampling
+# while also filtering, but 225ms buffers were tight enough to stutter.
 
 server:
-  port: 5549
+  port: 2333
   address: 0.0.0.0
   http2:
     enabled: false
@@ -104,12 +50,6 @@ plugins:
     #
     # The public instance is rate-limited to 10 req/sec, which is fine for one
     # node. Self-host with Deno if it ever becomes a problem.
-    #
-    # RELEVANT TO THIS TEST: SlugYZeon's YouTubeSourceManager is a *wrapper*,
-    # not a replacement. It looks up the source named "youtube" and routes
-    # playback through it. With youtube-source removed there is nothing to wrap
-    # and every Spotify track fails to mirror — so this block must stay exactly
-    # as it is. Do not "simplify" it away while testing the Spotify source.
     remoteCipher:
       url: https://cipher.kikkia.dev/
       userAgent: aura-musicbot-node1 # optional; identifies us in their metrics
@@ -214,11 +154,6 @@ plugins:
 
   # LavaSearch indexes these for in-app search lookups. Spelled out explicitly
   # because the jar's built-in default has changed between releases.
-  #
-  # UNCHANGED FOR THIS TEST: "spotify" stays. LavaSearch queries registered
-  # sources by NAME, and SlugYZeon registers a source called "spotify" just as
-  # LavaSrc did — so this line keeps working with the source swapped. Removing
-  # it would silently break Spotify in /search.
   lavasearch:
     sources:
       - spotify
@@ -236,12 +171,7 @@ plugins:
       # - "dzisrc:%ISRC%"
       # - "dzsearch:%QUERY%"
     sources:
-      # CHANGED FOR THIS TEST: was true, now false. THIS IS THE ONE-LINE
-      # REVERT. SlugYZeon registers a source also named "spotify"; both
-      # registered at once is a source-name collision, so exactly one may be on.
-      # The rest of this plugin stays on, because the bot's spsearch prefix and
-      # the sources below are untouched.
-      spotify: false # was: true (required for spsearch, which /spotifyplaylist depends on)
+      spotify: true # required for spsearch, which /spotifyplaylist depends on
       applemusic: false
       deezer: false # needs masterDecryptionKey + arl, see below
       yandexmusic: false
@@ -260,28 +190,38 @@ plugins:
       vkmusic: false
       lrcLib: false
     spotify:
-      # BLANKED FOR THIS TEST — and they are genuinely not needed.
-      #
-      # LavaSrc's spotify source is switched off above, so these authenticate
-      # nothing. SlugYZeon has no clientId/clientSecret field at all: it hits
-      # spclient.wg.spotify.com with an anonymous token instead. Verified in
-      # SlugYZeonSpotifyConfig — the only fields that exist are countryCode,
-      # playlistLoadLimit, albumLoadLimit, resolveArtistsInSearch, localFiles.
-      #
-      # The real values live in application.yml. Copy them back here when you
-      # revert, or just delete this whole block.
-      #
-      # NOTE this is the NODE's credential. The bot keeps its own separate one
-      # in .env (a4d68b…) and still needs it — for spsearch, for cover art, and
-      # for the ytmsearch fallback track URIs. Those are the bot's calls, not
-      # the node's, so this test does not affect them.
-      clientId:
-      clientSecret:
+      # Required for spsearch.
+      clientId: b9a4b5775f1847a2b072573589b530f7
+      clientSecret: 682ef411fa5942d28bfe6c409e90f202
       # spDc: "your sp dc cookie" # cookie for the spotify lyrics api
       countryCode: US
       playlistLoadLimit: 6
       albumLoadLimit: 6
       resolveArtistsInSearch: true
+      # TRUE (was absent = false). This is what makes /addrelated work.
+      #
+      # Spotify retired the public recommendations endpoint in Nov 2024 —
+      # /v1/recommendations and /v1/artists/{id}/related-artists now 404, both
+      # verified against this project's credentials. LavaSrc's getRecommendations
+      # has two routes: the partner API (api-partner.spotify.com/pathfinder) and
+      # the retired v1 endpoint, and it picks between them with THIS flag.
+      #
+      # With it false, the v1 route is used, it 404s, and the command silently
+      # returns nothing. With it true, requests go to the partner API, which is
+      # still live. If the partner call fails, LavaSrc logs
+      #   "Partner API recommendations failed for '...', falling back to Spotify v1 API"
+      # and falls back — so this cannot make anything worse than the current
+      # behaviour, it is the current behaviour with a working route tried first.
+      #
+      # It also moves SEARCH off api.spotify.com and onto the partner API, which
+      # takes /spotifyplaylist and spsearch off the dev-mode quota. Search falls
+      # back to v1 if the partner returns nothing, and v1 search still works
+      # (verified 200), so /spotifyplaylist is unaffected either way.
+      #
+      # application-slugyzeon.yml needs no equivalent: SlugYZeon has no such flag
+      # and always uses its pathfinder route. This block is only here so the
+      # OTHER file matches.
+      preferPartnerApi: true
       # MUST stay false: no "local" source is enabled, so local file lookups
       # cannot resolve and would blank out the track.
       localFiles: false
@@ -320,7 +260,7 @@ plugins:
       countryCode: US
       language: en
     vkmusic:
-      # userToken: "your vkmusic token"
+      # userToken: "your user token"
       playlistLoadLimit: 1
       artistLoadLimit: 1
       recommendationsLoadLimit: 10
@@ -338,69 +278,13 @@ plugins:
       searchLimit: 10
     jiosaavn:
       decryption:
-        # secretKey: "??" # find your own; required only when sources.jiosaavn is true
+        # secretKey: "??" # find your own; required only if sources.jiosaavn is true
         algorithm: DES
         transformation: DES/ECB/PKCS5Padding
       # proxy:
       #   url: "https://example.org"
       #   username: "my-bot"
       #   password: "youshallpass"
-
-  # ==========================================================================
-  # SLUGYZEON — the thing under test
-  # ==========================================================================
-  #  The whole hypothesis in one block. SlugYZeon hits spclient.wg.spotify.com
-  #  with an anonymous token instead of api.spotify.com with your app, so
-  #  b9a4b5's dev-mode quota stops governing the node entirely, and it caches
-  #  trackId -> ISRC in a 50,000-entry LRU with no TTL, so a repeat load costs
-  #  zero Spotify calls.
-  #
-  #  Two things to be clear about:
-  #   * It does NOT reduce the number of requests. Still one per track; they
-  #     just go 25-at-a-time in parallel. What changes is WHICH quota they hit.
-  #   * It does NOT cache the YouTube side. The mirroring lookup re-runs on
-  #     every single play. So this alone will not carry you to 1k concurrent
-  #     guilds — that is the separate SlugYZeon-YTCDN project.
-  #
-  #  Verified from source, not the README: there is no clientId and no
-  #  clientSecret anywhere in this config class. Only the fields below exist.
-  # ==========================================================================
-  slugyzeon:
-    sources:
-      # Default in the plugin is false, so this line is doing the real work.
-      spotify: true
-      # All off on purpose. Enable one at a time, deliberately, later.
-      amazonmusic: false
-      gaana: false
-      pandora: false
-      youtube: false
-    spotify:
-      countryCode: US
-      # 6 pages x 343 tracks = up to 2058 per load, vs 600 on LavaSrc.
-      # If a very large playlist comes back short, drop this to 2 and check
-      # whether it is a paging problem rather than a source problem.
-      playlistLoadLimit: 6
-      albumLoadLimit: 6
-      resolveArtistsInSearch: true
-      # MUST stay false: no "local" source is enabled, so local file lookups
-      # cannot resolve and would blank out the track.
-      localFiles: false
-    # DO NOT DELETE. The plugin's own default array is:
-    #   ytsearch:"%ISRC%"
-    #   ytsearch:%QUERY%
-    # — no ytmsearch. This node depends on ytmsearch, and the MUSIC client
-    # exists specifically to serve it. Omitting this block silently regresses
-    # fallback quality and it would look like the plugin's fault.
-    #
-    # Quoting matches both the plugin's default AND the lavasrc block above, on
-    # purpose: identical chain in both plugins is what makes this a fair A/B.
-    # (A config in the wild drops the quotes around %ISRC%; that almost
-    # certainly still works, but do not "fix" it here — one variable at a time.)
-    providers:
-      - "ytsearch:\"%ISRC%\"" # exact recording by ISRC
-      - "ytmsearch:%QUERY%" # YouTube Music search (better for music)
-      - "ytsearch:%QUERY%" # YouTube search fallback
-      - "scsearch:%QUERY%" # SoundCloud fallback
 
 lavalink:
   # Versions MUST match the jars in ./plugins, otherwise this file lies about
@@ -417,7 +301,8 @@ lavalink:
   # maven.lavalink.dev to download them.
   #
   # WARNING: Lavalink loads EVERY .jar it finds in pluginsDir, whether or not it
-  # is listed here. A stray jar in that folder loads silently.
+  # is listed here. A stray jar in that folder loads silently. Keep the folder
+  # limited to exactly these three jars.
   plugins:
     # NOT a release. 1.18.2 is broken for this region: it returns SABR-only
     # responses (audio itags present, no `url`, no `formats` array, only
@@ -433,22 +318,11 @@ lavalink:
     - dependency: dev.lavalink.youtube:youtube-plugin:2be8e542d3f6f178e048dca565892684c2e40177
       repository: https://maven.lavalink.dev/snapshots
       snapshot: true
-    # ADDED FOR THIS TEST. JitPack builds this from the git tag, which is why it
-    # is not on maven.lavalink.dev. Pinned to 4.2.2 to match this node — it is
-    # the plugin's own version, but the pairing is with the Lavalink release it
-    # was cut alongside, and both tags compile against lavalink-api 4.0.6.
-    # Leaving this out while keeping plugins.slugyzeon below is the failure mode
-    # to watch for on first boot: the node starts fine, the config block is
-    # simply ignored because nothing registered those properties, and every
-    # /spotifyplaylist fails at resolve with no obvious cause.
-    - dependency: com.github.xylen-py.SlugYZeon:slugyzeon-plugin:4.4.8
-      repository: https://jitpack.io
-    # KEPT, and still required, even though its spotify source is now off:
-    # the bot's spsearch prefix and lavasearch still resolve through it, and
-    # it is what makes the revert a one-line flip instead of a jar shuffle.
     - dependency: com.github.topi314.lavasrc:lavasrc-plugin:4.8.3
+      repository: https://jitpack.io
       snapshot: false
     - dependency: com.github.topi314.lavasearch:lavasearch-plugin:1.0.0
+      repository: https://jitpack.io
       snapshot: false
   pluginsDir: './plugins'
   server:
