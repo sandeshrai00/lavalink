@@ -30,11 +30,13 @@
 #  SlugYZeon IS published, but not to maven.lavalink.dev — it is on JitPack,
 #  which builds straight from the git tag:
 #
-#    com.github.xylen-py.SlugYZeon:slugyzeon-plugin:4.2.2
+#    com.github.xylen-py.SlugYZeon:slugyzeon-plugin:4.6.0
 #      repository: https://jitpack.io
 #
-#  Verified: 4.2.2 and 4.4.7 both return a real ~172KB jar. Pinned to 4.2.2 to
-#  match this node; both compile against lavalink-api 4.0.6, so either loads.
+#  4.6.0 (verified HTTP 200, 123,291 bytes) is what the node runs now. It adds
+#  Gaana, Amazon Music, Pandora, Spotify lyrics and YouTube oembed over 4.4.8.
+#  It does NOT change the mirror resolver — those string constants are identical
+#  between the two — so it does not fix a "No mirror found for track" failure.
 #  There is NO local build step and nothing to copy into plugins/.
 #
 #  CAVEAT, and it is a real one: a listed dependency means EVERY BOOT reaches
@@ -67,7 +69,9 @@
 # ============================================================================
 
 server:
-  port: 5549
+  # 2333, not 5549. 5549 was the old VPS; this node runs on Azure
+  # (20.219.220.91) and the bot's .env NODE_PORT must match this value.
+  port: 2333
   address: 0.0.0.0
   http2:
     enabled: false
@@ -434,21 +438,32 @@ lavalink:
       repository: https://maven.lavalink.dev/snapshots
       snapshot: true
     # ADDED FOR THIS TEST. JitPack builds this from the git tag, which is why it
-    # is not on maven.lavalink.dev. Pinned to 4.2.2 to match this node — it is
-    # the plugin's own version, but the pairing is with the Lavalink release it
-    # was cut alongside, and both tags compile against lavalink-api 4.0.6.
+    # is not on maven.lavalink.dev. Currently on 4.6.0.
+    #
     # Leaving this out while keeping plugins.slugyzeon below is the failure mode
     # to watch for on first boot: the node starts fine, the config block is
     # simply ignored because nothing registered those properties, and every
     # /spotifyplaylist fails at resolve with no obvious cause.
-    - dependency: com.github.xylen-py.SlugYZeon:slugyzeon-plugin:4.2.2
+    - dependency: com.github.xylen-py.SlugYZeon:slugyzeon-plugin:4.6.0
       repository: https://jitpack.io
     # KEPT, and still required, even though its spotify source is now off:
     # the bot's spsearch prefix and lavasearch still resolve through it, and
     # it is what makes the revert a one-line flip instead of a jar shuffle.
+    #
+    # repository is JitPack, NOT maven.lavalink.dev. That default is right for
+    # dev.lavalink.* plugins and WRONG here: topi314 publishes both of these to
+    # JitPack only, so the default 404s and the node refuses to boot:
+    #   Caused by: java.io.FileNotFoundException:
+    #     https://maven.lavalink.dev/releases/com/github/topi314/lavasrc/...
+    # PluginManager downloads inside its CONSTRUCTOR, so one 404 kills the
+    # whole Spring context rather than skipping the plugin. Verified: the whole
+    # com/github/topi314/ path 404s on maven.lavalink.dev, both jars are HTTP
+    # 200 on JitPack. Keep the jars in plugins/ too, so boot needs no network.
     - dependency: com.github.topi314.lavasrc:lavasrc-plugin:4.8.3
+      repository: "https://jitpack.io"
       snapshot: false
     - dependency: com.github.topi314.lavasearch:lavasearch-plugin:1.0.0
+      repository: "https://jitpack.io"
       snapshot: false
   pluginsDir: './plugins'
   server:

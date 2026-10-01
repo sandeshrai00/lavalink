@@ -319,8 +319,10 @@ lavalink:
       repository: https://maven.lavalink.dev/snapshots
       snapshot: true
     - dependency: com.github.topi314.lavasrc:lavasrc-plugin:4.8.3
+      repository: https://jitpack.io
       snapshot: false
     - dependency: com.github.topi314.lavasearch:lavasearch-plugin:1.0.0
+      repository: https://jitpack.io
       snapshot: false
   pluginsDir: './plugins'
   server:
