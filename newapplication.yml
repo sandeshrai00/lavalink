@@ -71,7 +71,7 @@
 server:
   # 2333, not 5549. 5549 was the old VPS; this node runs on Azure
   # (20.219.220.91) and the bot's .env NODE_PORT must match this value.
-  port: 2333
+  port: 7491
   address: 0.0.0.0
   http2:
     enabled: false
@@ -118,7 +118,9 @@ plugins:
       url: https://cipher.kikkia.dev/
       userAgent: aura-musicbot-node1 # optional; identifies us in their metrics
       # No password: the public instance does not require one. If you self-host
-      # and set API_TOKEN there, add it here as `password:`.
+      # and set API_TOKEN there, add it here as `password:`. 
+    remotePot:
+      url: https://pot.ashtongg.me
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
@@ -434,9 +436,9 @@ lavalink:
     # here but NOT in 1.18.2.
     #
     # Snapshots are unreleased. When upstream ships a fix, re-pin to it.
-    - dependency: dev.lavalink.youtube:youtube-plugin:2be8e542d3f6f178e048dca565892684c2e40177
-      repository: https://maven.lavalink.dev/snapshots
-      snapshot: true
+    #- dependency: dev.lavalink.youtube:youtube-plugin:2be8e542d3f6f178e048dca565892684c2e40177
+    #  repository: https://maven.lavalink.dev/snapshots
+    #  snapshot: true
     # ADDED FOR THIS TEST. JitPack builds this from the git tag, which is why it
     # is not on maven.lavalink.dev. Currently on 4.6.0.
     #
