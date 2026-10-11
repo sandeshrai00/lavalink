@@ -71,7 +71,7 @@
 server:
   # 2333, not 5549. 5549 was the old VPS; this node runs on Azure
   # (20.219.220.91) and the bot's .env NODE_PORT must match this value.
-  port: 7491
+  port: 30330
   address: 0.0.0.0
   http2:
     enabled: false
