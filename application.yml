@@ -22,14 +22,14 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    # TV is the only playback client — datacenter IPs are gated on all others.
+    # TV plays first (OAuth, itag251); IOS is the fallback for videos TV refuses.
     clients:
+      - TV
+      - IOS
       - WEB
       - MWEB
-      - TV
       - TVHTML5_SIMPLY
       - ANDROID_MUSIC
-      - IOS
       - WEBEMBEDDED
       - MUSIC
       - ANDROID_VR
@@ -44,8 +44,9 @@ plugins:
         playlistLoading: true
         videoLoading: true
         searching: true
+      # Fallback playback client — catches videos TV is refused on.
       IOS:
-        playback: false
+        playback: true
         playlistLoading: true
         videoLoading: true
         searching: true
@@ -75,7 +76,7 @@ plugins:
         playlistLoading: false
         videoLoading: false
         searching: true
-      # The ONLY playback client — needs the OAuth account above.
+      # Primary playback client — needs the OAuth account above.
       TV:
         playback: true
         playlistLoading: false
