@@ -71,7 +71,7 @@
 server:
   # 2333, not 5549. 5549 was the old VPS; this node runs on Azure
   # (20.219.220.91) and the bot's .env NODE_PORT must match this value.
-  port: 30330
+  port: 40007
   address: 0.0.0.0
   http2:
     enabled: false
@@ -120,7 +120,7 @@ plugins:
       # No password: the public instance does not require one. If you self-host
       # and set API_TOKEN there, add it here as `password:`. 
     remotePot:
-      url: https://pot.ashtongg.me
+      url: http://node2-it.botkeep.cloud:30846
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
