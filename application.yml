@@ -18,7 +18,7 @@ plugins:
       userAgent: aura-musicbot-node1
     # Required: without PoT, TV falls back to itag18.
     remotePot:
-      url: https://pot.ashtongg.me
+      url: http://node2-it.botkeep.cloud:30846
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
@@ -195,7 +195,7 @@ lavalink:
       snapshot: false
   pluginsDir: './plugins'
   server:
-    # Must match NODE_PASSWORD in the bot's .env.
+    # Must match N6_AUTH in the bot's .env — a mismatch fails every connect.
     password: sandesh11
     sources:
       youtube: false # youtube-source plugin replaces the built-in
@@ -250,6 +250,8 @@ logging:
     root: INFO
     lavalink: INFO
     dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
+    # TEMPORARY: pot/client/itag tracing for the webpo test. REMOVE after.
+    dev.lavalink.youtube: DEBUG
   request:
     enabled: true
     includeClientInfo: true
